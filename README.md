@@ -63,30 +63,186 @@ flowchart LR
     AUTH --> REDIS
 
 ```
-
 ---
 
-# 🔄 OAuth2 Authorization Code Flow (Your Implementation)
+# 🔐 **OAuth2 Authorization Code Flow — Full Detailed Diagram**
 
 ```mermaid
 sequenceDiagram
-    participant FE as Frontend (Next.js)
-    participant AUTH as Auth-Service
-    participant Google as Google OAuth Provider
-    participant Redis as Redis (authcodes)
+    autonumber
 
-    FE->>AUTH: GET /oauth/google?redirect_uri=<FE_CALLBACK>
-    AUTH->>Google: Redirect user to Google Consent Page
-    Google-->>AUTH: Redirect to /oauth/callback/google?code=PROVIDER_CODE
-    AUTH->>AUTH: Exchange provider code for access_token + userinfo
-    AUTH->>Redis: Store local authorization code (auth:authcode)
-    AUTH-->>FE: Redirect FE_CALLBACK?code=<local_code>
-    FE->>AUTH: POST /token with code
-    AUTH->>Redis: consume authcode
-    AUTH-->>FE: access_token + id_token + refresh_token
+    participant User as 🧑 User (Browser)
+    participant FE as 🌐 Frontend (Next.js)
+    participant AUTH as 🔐 Auth-Service (IDP)
+    participant Provider as 🌈 OAuth Provider (Google/GitHub)
+    participant Redis as ⚡ Redis (authcodes)
+    participant DB as 🗄️ Postgres (Users/Identity)
+
+    %% --- STEP 1: USER STARTS LOGIN ---
+    User->>FE: Click "Continue with Google/GitHub"
+    FE->>AUTH: GET /oauth/google?redirect_uri=<FE_CALLBACK>&client_id=frontend&state=xyz
+
+    %% --- STEP 2: REDIRECT TO PROVIDER ---
+    AUTH->>Provider: Redirect to Google/GitHub<br/>client_id, server_redirect_uri,<br/>state=encoded(clientRedirect+client_id+origState)
+    
+    %% --- STEP 3: PROVIDER LOGIN ---
+    User->>Provider: Authenticate (Google/GitHub Login)
+    Provider-->>AUTH: Redirect back to<br/>/oauth/callback/google?code=PROVIDER_CODE&state=ENC_STATE
+
+    %% --- STEP 4: EXCHANGE PROVIDER CODE ---
+    AUTH->>Provider: POST /token (exchange code)<br/>client_secret + server_redirect_uri
+    Provider-->>AUTH: access_token + id_token + profile
+    
+    %% --- STEP 5: LINK / CREATE LOCAL USER ---
+    AUTH->>DB: Find Identity(provider, providerUserId)
+    alt Identity Found
+        DB-->>AUTH: Return linked user
+    else No Identity Found
+        AUTH->>DB: Find/Create User by email
+        AUTH->>DB: Insert Identity(provider_userId → user)
+        DB-->>AUTH: Return new user
+    end
+
+    %% --- STEP 6: CREATE INTERNAL AUTH CODE ---
+    AUTH->>Redis: SET auth:authcode:<code><br/>{ userId, clientId, redirectUri, scope }
+
+    %% --- STEP 7: REDIRECT BACK TO FRONTEND ---
+    AUTH-->>FE: Redirect FE_CALLBACK?code=<local_auth_code>&state=xyz
+
+    %% --- STEP 8: FRONTEND EXCHANGES CODE ---
+    FE->>AUTH: POST /token<br/>{ grant_type: "authorization_code", code, redirect_uri }
+
+    %% --- STEP 9: AUTH SERVICE VALIDATES CODE ---
+    AUTH->>Redis: GET auth:authcode:<code>
+    Redis-->>AUTH: { userId, clientId, redirectUri, scope }
+    AUTH->>Redis: DEL auth:authcode:<code>
+
+    %% --- STEP 10: RETURN TOKENS TO FRONTEND ---
+    AUTH->>AUTH: Issue access_token + id_token + refresh_token
+    AUTH-->>FE: { access_token, id_token, refresh_token }
 ```
 
 ---
+
+# 📘 **Detailed Explanation (Step-by-Step)**
+
+### **1. User starts login**
+
+Frontend calls:
+
+```
+GET /oauth/google?redirect_uri=http://localhost:3000/callback&state=xyz&client_id=frontend
+```
+
+---
+
+### **2. Auth-Service redirects to Google/GitHub**
+
+Auth-Service **does NOT pass frontend redirect** to Google.
+
+It uses its **own registered redirect_uri**:
+
+```
+http://localhost:4000/oauth/callback/google
+```
+
+And encodes frontend redirect inside `state`.
+
+---
+
+### **3. User logs in with Google/GitHub**
+
+The provider redirects back to your backend:
+
+```
+/oauth/callback/google?code=PROVIDER_CODE&state=ENCODED
+```
+
+---
+
+### **4. Auth-Service exchanges code with provider**
+
+Calls Google/GitHub:
+
+```
+POST https://oauth2.googleapis.com/token
+```
+
+Receives provider access_token + profile.
+
+---
+
+### **5. Auth-Service links/creates local user**
+
+* If identity exists → load user
+* If email found → attach identity
+* If new user → create record + identity row
+
+Stored in PostgreSQL.
+
+---
+
+### **6. Auth-Service creates internal authorization code**
+
+Stores in Redis:
+
+```
+auth:authcode:<random>
+{
+   userId,
+   clientId,
+   redirectUri,
+   scope
+}
+```
+
+TTL: 5 minutes (configurable).
+
+---
+
+### **7. Redirects back to frontend**
+
+```
+http://localhost:3000/callback?code=<internal_code>&state=xyz
+```
+
+---
+
+### **8. Frontend exchanges code for tokens**
+
+```
+POST /token
+{
+  grant_type: "authorization_code",
+  code,
+  redirect_uri
+}
+```
+
+---
+
+### **9. Auth-Service validates the code**
+
+* Check Redis
+* Validate redirect_uri
+* Check PKCE (if used)
+* Delete authcode
+
+---
+
+### **10. Auth-Service returns tokens**
+
+```
+{
+  access_token,
+  id_token,
+  refresh_token,
+  expires_in
+}
+```
+
+Tokens are signed using **your RSA private key**.
+
 
 # 🏛️ Components Explained
 
