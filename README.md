@@ -53,14 +53,15 @@ flowchart LR
     REDIS["⚡ Redis"]
 
     User --> FE
-    FE -- Login Redirect --> AUTH
-    AUTH -- Auth Code --> FE
-    FE --> AUTH: Exchange Code (/token)
-    AUTH -- Tokens --> FE
-    FE --> BE: attach access_token
-    BE -- Validate --> AUTH
+    FE -- "Login Redirect" --> AUTH
+    AUTH -- "Auth Code" --> FE
+    FE -- "Exchange Code (/token)" --> AUTH
+    AUTH -- "Tokens" --> FE
+    FE -- "attach access_token" --> BE
+    BE -- "Validate" --> AUTH
     AUTH --> PG
     AUTH --> REDIS
+
 ```
 
 ---
